@@ -11,7 +11,7 @@ assert(ColorMode.TILEMAP == 4)
 
 local fs = app.fs
 local pc = app.pixelColor
-local output_folder = fs.fileTitle(spr.filename)
+local output_folder = fs.filePath(spr.filename)
 local image_n = 0
 local tileset_n = 0
 
@@ -44,11 +44,17 @@ local function fill_user_data(t, obj)
   end
 end
 
-local function export_tileset(tileset)
+local function export_tileset(tileset, layer)
   local t = {}
   local grid = tileset.grid
   local size = grid.tileSize
-  t.grid = { tileSize={ width=grid.tileSize.width, height=grid.tileSize.height } }
+  t.firstgid = 1
+  t.image = fs.fileTitle(spr.filename) .. layer.name .. "Tileset" .. ".png"
+  t.imagewidth = size.width
+  t.imageheight = size.height * #tileset
+  t.name = fs.fileTitle(spr.filename) .. layer.name .. "Tileset"
+  t.tilewidth = size.width
+  t.tileheight = size.height
   if #tileset > 0 then
     local spec = spr.spec
     spec.width = size.width
@@ -61,17 +67,16 @@ local function export_tileset(tileset)
     end
 
     tileset_n = tileset_n + 1
-    local imageFn = fs.joinPath(output_folder, "tileset" .. tileset_n .. ".png")
+    local imageFn = fs.joinPath(output_folder, fs.fileTitle(spr.filename) .. layer.name .. "Tileset" .. ".png")
     image:saveAs(imageFn)
-    t.image = imageFn
   end
   return t
 end
 
-local function export_tilesets(tilesets)
+local function export_tilesets(tilesets, layer)
   local t = {}
   for _,tileset in ipairs(tilesets) do
-    table.insert(t, export_tileset(tileset))
+    table.insert(t, export_tileset(tileset, layer))
   end
   return t
 end
@@ -84,7 +89,7 @@ local function export_frames(frames)
   return t
 end
 
-local function export_cel(cel)
+local function export_cel(cel, layer)
   local t = {
     frame=cel.frameNumber-1,
     bounds={ x=cel.bounds.x,
@@ -100,7 +105,7 @@ local function export_cel(cel)
                   height=tilemap.height,
                   tiles={} }
     for it in tilemap:pixels() do
-      table.insert(t.tilemap.tiles, pc.tileI(it()))
+      table.insert(layer.data, pc.tileI(it()) + 1)
     end
   else
     -- save regular cel
@@ -114,10 +119,10 @@ local function export_cel(cel)
   return t
 end
 
-local function export_cels(cels)
+local function export_cels(cels, layer)
   local t = {}
   for _,cel in ipairs(cels) do
-    table.insert(t, export_cel(cel))
+    table.insert(t, export_cel(cel, layer))
   end
   return t
 end
@@ -132,7 +137,16 @@ local function get_tileset_index(layer)
 end
 
 local function export_layer(layer, export_layers)
-  local t = { name=layer.name }
+  local t = { 
+    name=fs.fileTitle(spr.filename) .. layer.name,
+    data={},
+    opacity=layer:cel(1).opacity,
+    type="tilelayer",
+    width=layer:cel(1).image.width,
+    height=layer:cel(1).image.height,
+    x=layer:cel(1).position.x,
+    y=layer:cel(1).position.y
+  }
   if layer.isImage then
     if layer.opacity < 255 then
       t.opacity = layer.opacity
@@ -140,13 +154,11 @@ local function export_layer(layer, export_layers)
     if layer.blendMode ~= BlendMode.NORMAL then
       t.blendMode = layer.blendMode
     end
-    if #layer.cels >= 1 then
-      t.cels = export_cels(layer.cels)
-    end
-    if pcall(function() return layer.isTilemap end) then
-      if layer.isTilemap then
-        t.tileset = get_tileset_index(layer)
-      end
+    local tilemap = layer:cel(1).image
+    -- save tilemap
+    t.data = {}
+    for it in tilemap:pixels() do
+      table.insert(t.data, pc.tileI(it()) + 1)
     end
   elseif layer.isGroup then
     t.layers = export_layers(layer.layers)
@@ -158,7 +170,9 @@ end
 local function export_layers(layers)
   local t = {}
   for _,layer in ipairs(layers) do
-    table.insert(t, export_layer(layer, export_layers))
+    if layer.isVisible == true then
+      table.insert(t, export_layer(layer, export_layers))
+    end
   end
   return t
 end
@@ -223,23 +237,36 @@ end
 fs.makeDirectory(output_folder)
 
 ----------------------------------------------------------------------
--- Write /sprite.json file in the output folder
+-- Write /Map.json file in the output folder
 
-local jsonFn = fs.joinPath(output_folder, "sprite.json")
-local data = {
-  filename=spr.filename,
-  width=spr.width,
-  height=spr.height,
-  frames=export_frames(spr.frames),
-  layers=export_layers(spr.layers)
-}
-if #spr.tags > 0 then
-  data.tags = export_tags(spr.tags)
+if app.range.type == RangeType.LAYERS then
+  for _,layer in ipairs(app.range.layers) do
+    local jsonFn = fs.joinPath(output_folder, fs.fileTitle(spr.filename) .. layer.name .. ".json")
+    local data = {
+      orientation = "orthogonal",
+      width = spr.width / layer.tileset.grid.tileSize.width,
+      height = spr.height / layer.tileset.grid.tileSize.height,
+      tilewidth = layer.tileset.grid.tileSize.width,
+      tileheight = layer.tileset.grid.tileSize.height,
+      layers = export_layers({layer})
+    }
+    data.tilesets = export_tilesets({layer.tileset}, layer)
+    write_json_data(jsonFn, data)
+  end
+else
+  local jsonFn = fs.joinPath(output_folder, fs.fileTitle(spr.filename) .. app.activeLayer.name .. ".json")
+  local data = {
+    -- filename=spr.filename,
+    orientation = "orthogonal",
+    width = spr.width / app.activeLayer.tileset.grid.tileSize.width,
+    height = spr.height / app.activeLayer.tileset.grid.tileSize.height,
+    tilewidth = app.activeLayer.tileset.grid.tileSize.width,
+    tileheight = app.activeLayer.tileset.grid.tileSize.height,
+    -- frames=export_frames(spr.frames),
+    layers = export_layers({app.activeLayer})
+  }
+  if pcall(function() return spr.tilesets end) then
+    data.tilesets = export_tilesets({app.activeLayer.tileset}, app.activeLayer)
+  end
+  write_json_data(jsonFn, data)
 end
-if #spr.slices > 0 then
-  data.slices = export_slices(spr.slices)
-end
-if pcall(function() return spr.tilesets end) then
-  data.tilesets = export_tilesets(spr.tilesets)
-end
-write_json_data(jsonFn, data)
